@@ -122,8 +122,26 @@ sealed class ConnectorForm : Form
 
     private string? FindAdb()
     {
-        foreach (var path in new[] { @"C:\Program Files\Netease\MuMuPlayer\nx_main\adb.exe", @"C:\Program Files\Netease\MuMuPlayer\nx_device\12.0\shell\adb.exe" })
-            if (File.Exists(path)) return path;
+        var roots = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+        }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in roots)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(root, "Netease", "MuMuPlayer", "nx_main", "adb.exe"),
+                Path.Combine(root, "Netease", "MuMuPlayer", "nx_device", "12.0", "shell", "adb.exe"),
+                Path.Combine(root, "Netease", "MuMuPlayerGlobal", "nx_main", "adb.exe"),
+                Path.Combine(root, "Netease", "MuMuPlayerGlobal-12.0", "shell", "adb.exe"),
+                Path.Combine(root, "Netease", "MuMuPlayer-12.0", "shell", "adb.exe")
+            };
+            foreach (var candidate in candidates)
+                if (File.Exists(candidate)) return candidate;
+        }
         return null;
     }
 

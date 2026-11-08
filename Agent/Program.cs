@@ -142,6 +142,18 @@ sealed class ConnectorForm : Form
             foreach (var candidate in candidates)
                 if (File.Exists(candidate)) return candidate;
         }
+
+        foreach (var root in roots)
+        {
+            try
+            {
+                foreach (var candidate in Directory.EnumerateFiles(root, "adb.exe", SearchOption.AllDirectories)
+                    .Where(path => path.Contains("Netease", StringComparison.OrdinalIgnoreCase)
+                        || path.Contains("MuMu", StringComparison.OrdinalIgnoreCase)))
+                    return candidate;
+            }
+            catch { }
+        }
         return null;
     }
 
@@ -150,11 +162,22 @@ sealed class ConnectorForm : Form
         if (googleSubject == null) return;
         devicesList.Items.Clear();
         if (adbPath == null) { status.Text = "Không tìm thấy ADB MuMuPlayer"; return; }
+
+        RunAdb("connect 127.0.0.1:7555");
+        for (var index = 0; index < 16; index++)
+        {
+            var port = 16384 + index * 32;
+            RunAdb($"connect 127.0.0.1:{port}");
+        }
         var output = RunAdb("devices");
         var ids = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Skip(1)
-            .Select(x => x.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault())
-            .Where(x => x?.StartsWith("emulator-") == true)
+            .Select(x => x.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Where(parts => parts.Length >= 2 && parts[1].Equals("device", StringComparison.OrdinalIgnoreCase))
+            .Select(parts => parts[0])
+            .Where(x => x.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase)
+                || x.StartsWith("localhost:", StringComparison.OrdinalIgnoreCase)
+                || x.StartsWith("emulator-", StringComparison.OrdinalIgnoreCase))
             .Select(x => x!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -169,7 +192,16 @@ sealed class ConnectorForm : Form
     private async Task SyncDevicesAsync(List<string> deviceIds)
     {
         var body = JsonSerializer.Serialize(new { GoogleSubject = googleSubject, PcName = PcDisplayName, DeviceIds = deviceIds, DeviceNames = deviceIds.Select(GetMumuName) });
-        await api.PostAsync($"{apiUrl}/api/devices/sync", new StringContent(body, Encoding.UTF8, "application/json"));
+        try
+        {
+            var response = await api.PostAsync($"{apiUrl}/api/devices/sync", new StringContent(body, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+                status.Text = $"Không thể đồng bộ thiết bị: HTTP {(int)response.StatusCode}";
+        }
+        catch (Exception ex)
+        {
+            status.Text = $"Lỗi kết nối máy chủ: {ex.Message}";
+        }
     }
 
     private string RunAdb(string arguments)
@@ -278,7 +310,16 @@ sealed class ConnectorForm : Form
 
     private string GetMumuName(string serial)
     {
-        var manager = @"C:\Program Files\Netease\MuMuPlayer\nx_main\MuMuManager.exe";
+        var managerCandidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(adbPath))
+        {
+            var adbDirectory = Path.GetDirectoryName(adbPath)!;
+            if (adbDirectory.EndsWith(@"nx_device\12.0\shell", StringComparison.OrdinalIgnoreCase))
+                adbDirectory = Path.GetFullPath(Path.Combine(adbDirectory, "..", "..", "..", "nx_main"));
+            managerCandidates.Add(Path.Combine(adbDirectory, "MuMuManager.exe"));
+        }
+        managerCandidates.Add(@"C:\Program Files\Netease\MuMuPlayer\nx_main\MuMuManager.exe");
+        var manager = managerCandidates.FirstOrDefault(File.Exists);
         if (!File.Exists(manager) || !serial.StartsWith("emulator-")) return $"MuMu {serial}";
         var portText = serial.Replace("emulator-", "");
         if (!int.TryParse(portText, out var port)) return $"MuMu {serial}";

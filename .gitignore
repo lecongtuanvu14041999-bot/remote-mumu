@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+**/node_modules/
+Client/dist/
+publish/test-download.zip
+*.user
+*.suo
+Server/devices.json
+Server/rooms.json

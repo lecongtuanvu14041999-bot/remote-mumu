@@ -8,6 +8,7 @@ RUN dotnet publish Server/Server.csproj -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish .
+COPY publish/RemoteMumu-Agent.zip /app/publish/RemoteMumu-Agent.zip
 ENV ASPNETCORE_URLS=http://+:10000
 EXPOSE 10000
 ENTRYPOINT ["dotnet", "Server.dll"]

@@ -4,7 +4,7 @@ import * as signalR from '@microsoft/signalr'
 import { Copy, Gamepad2, Link2, LogOut, MonitorUp, Send, Users } from 'lucide-react'
 import './styles.css'
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'https://localhost:7190'
+const API_URL = import.meta.env.VITE_API_URL ?? 'https://remote-mumu.onrender.com'
 
 interface Chat { name: string; text: string }
 

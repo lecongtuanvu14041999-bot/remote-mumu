@@ -46,8 +46,14 @@ app.MapControllers();
 app.MapHub<RoomHub>("/hubs/room");
 app.MapGet("/downloads/RemoteMumu-Agent.zip", () =>
 {
-    var filePath = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "publish", "RemoteMumu-Agent.zip"));
-    return File.Exists(filePath)
+    var candidates = new[]
+    {
+        Path.Combine(app.Environment.ContentRootPath, "publish", "RemoteMumu-Agent.zip"),
+        Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "publish", "RemoteMumu-Agent.zip")),
+        "/app/publish/RemoteMumu-Agent.zip"
+    };
+    var filePath = candidates.FirstOrDefault(File.Exists);
+    return filePath != null
         ? Results.File(filePath, "application/zip", "RemoteMumu-Agent.zip")
         : Results.NotFound(new { error = "Connector package not found" });
 });

@@ -24,8 +24,8 @@ sealed class ConnectorForm : Form
     private string? googleSubject;
     private string? googleName;
     private string? adbPath;
-    private readonly string apiUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_API_URL")?.TrimEnd('/') ?? "https://localhost:7190";
-    private readonly string webUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_WEB_URL")?.TrimEnd('/') ?? "http://localhost:5173";
+    private readonly string apiUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_API_URL")?.TrimEnd('/') ?? "https://remote-mumu.onrender.com";
+    private readonly string webUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_WEB_URL")?.TrimEnd('/') ?? "https://lecongtuanvu14041999-bot.github.io/remote-mumu";
 
     public ConnectorForm()
     {

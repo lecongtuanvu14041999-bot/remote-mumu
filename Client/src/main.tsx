@@ -3,8 +3,9 @@ import { createRoot } from 'react-dom/client'
 import * as signalR from '@microsoft/signalr'
 import { Copy, Gamepad2, Link2, LogOut, MonitorUp, Send, Users } from 'lucide-react'
 import './styles.css'
+import './api-errors.css'
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'https://remote-mumu.onrender.com'
+const API_URL = (import.meta.env.VITE_API_URL || 'https://remote-mumu.onrender.com').replace(/\/+$/, '')
 
 interface Chat { name: string; text: string }
 
@@ -13,7 +14,11 @@ declare global {
     google?: {
       accounts: {
         id: {
-          initialize: (options: { client_id: string; callback: (response: { credential: string }) => void }) => void
+          initialize: (options: {
+            client_id: string
+            callback: (response: { credential: string }) => void
+            use_fedcm_for_button?: boolean
+          }) => void
           renderButton: (element: HTMLElement, options: { theme?: string; size?: string; text?: string }) => void
           disableAutoSelect: () => void
         }
@@ -32,6 +37,7 @@ function App() {
   const [message, setMessage] = useState('')
   const [connected, setConnected] = useState(false)
   const [frame, setFrame] = useState<string | null>(null)
+  const [apiError, setApiError] = useState('')
   const [user, setUser] = useState<GoogleUser | null>(null)
   const [devices, setDevices] = useState<{ deviceId: string; deviceName: string; online: boolean }[]>([])
   const [myDevices, setMyDevices] = useState<{ pcName: string; deviceId: string; deviceName: string; online: boolean }[]>([])
@@ -44,38 +50,53 @@ function App() {
 
   const createRoom = async () => {
     if (!user) return
-    const res = await fetch(`${API_URL}/api/rooms`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerSubject: user.subject, ownerName: user.name, name: roomName })
-    })
-    const data = await res.json()
-    setRoom(data.roomId)
-    setDevices(data.devices ?? [])
-    setConnectorUrl(`${API_URL}/downloads/RemoteMumu-Agent.zip`)
+    setApiError('')
+    try {
+      const res = await fetch(`${API_URL}/api/rooms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerSubject: user.subject, ownerName: user.name, name: roomName })
+      })
+      if (!res.ok) throw new Error(`Tạo phòng thất bại (HTTP ${res.status})`)
+      const data = await res.json()
+      setRoom(data.roomId)
+      setDevices(data.devices ?? [])
+      setMyRooms(items => [data, ...items.filter(item => item.roomId !== data.roomId)])
+      setConnectorUrl(`${API_URL}/downloads/RemoteMumu-Agent.zip`)
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Không thể tạo phòng.')
+    }
   }
 
-  const joinRoom = async () => {
-    if (!room.trim()) return
-    const roomResponse = await fetch(`${API_URL}/api/rooms/${room.trim().toUpperCase()}`)
-    if (roomResponse.ok) {
+  const joinRoom = async (roomCode = room) => {
+    const roomId = roomCode.trim().toUpperCase()
+    if (!roomId) return
+    setApiError('')
+    let hub: signalR.HubConnection | null = null
+    try {
+      const roomResponse = await fetch(`${API_URL}/api/rooms/${roomId}`)
+      if (!roomResponse.ok) throw new Error(`Không tìm thấy phòng (HTTP ${roomResponse.status})`)
       const roomData = await roomResponse.json()
       setDevices(roomData.devices ?? [])
+      hub = new signalR.HubConnectionBuilder()
+        .withUrl(`${API_URL}/hubs/room`)
+        .withAutomaticReconnect()
+        .build()
+      hub.on('ChatReceived', (payload: { displayName: string; message: string }) =>
+        setChat(items => [...items, { name: payload.displayName, text: payload.message }]))
+      hub.on('FrameReceived', (payload: { imageBase64: string }) =>
+        setFrame(`data:image/jpeg;base64,${payload.imageBase64}`))
+      hub.onclose(() => setConnected(false))
+      await hub.start()
+      await hub.invoke('JoinRoom', roomId, name)
+      connection.current = hub
+      setRoom(roomId)
+      setConnected(true)
+      setJoined(true)
+    } catch (error) {
+      await hub?.stop()
+      setApiError(error instanceof Error ? error.message : 'Không thể tham gia phòng.')
     }
-    const hub = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_URL}/hubs/room`)
-      .withAutomaticReconnect()
-      .build()
-    hub.on('ChatReceived', (payload: { displayName: string; message: string }) =>
-      setChat(items => [...items, { name: payload.displayName, text: payload.message }]))
-    hub.on('FrameReceived', (payload: { imageBase64: string }) =>
-      setFrame(`data:image/jpeg;base64,${payload.imageBase64}`))
-    hub.onclose(() => setConnected(false))
-    await hub.start()
-    await hub.invoke('JoinRoom', room, name)
-    connection.current = hub
-    setConnected(true)
-    setJoined(true)
   }
 
   const sendChat = async () => {
@@ -123,6 +144,7 @@ function App() {
     window.google?.accounts.id.disableAutoSelect()
     setUser(null)
     setMyDevices([])
+    setApiError('')
     setJoined(false)
     setName('Bạn')
   }
@@ -132,33 +154,43 @@ function App() {
       if (!window.google || !googleButton.current) return
       window.google.accounts.id.initialize({
         client_id: '413729404676-dp2369quefq6tv75abuiu28nlvk87253.apps.googleusercontent.com',
+        use_fedcm_for_button: true,
         callback: async ({ credential }) => {
-          const response = await fetch(`${API_URL}/api/auth/google`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken: credential })
-          })
-          if (!response.ok) return
-          const profile = await response.json() as GoogleUser
-          setUser(profile)
-          setName(profile.name)
-          const connector = new URLSearchParams(window.location.search).get('connector')
-          if (connector) {
-            let delivered = false
-            for (let attempt = 0; attempt < 3 && !delivered; attempt++) {
-              try {
-                const callback = await fetch(connector, {
-                  method: 'POST',
-                  mode: 'cors',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ subject: profile.subject, name: profile.name, email: profile.email, picture: profile.picture })
-                })
-                delivered = callback.ok
-              } catch {
-                await new Promise(resolve => window.setTimeout(resolve, 500))
+          setApiError('')
+          try {
+            const response = await fetch(`${API_URL}/api/auth/google`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ idToken: credential })
+            })
+            if (!response.ok) throw new Error(`Đăng nhập máy chủ thất bại (HTTP ${response.status})`)
+            const profile = await response.json() as GoogleUser
+            setUser(profile)
+            setName(profile.name)
+            const connector = new URLSearchParams(window.location.search).get('connector')
+            if (connector) {
+              let delivered = false
+              for (let attempt = 0; attempt < 3 && !delivered; attempt++) {
+                try {
+                  const callback = await fetch(connector, {
+                    method: 'POST',
+                    mode: 'cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ subject: profile.subject, name: profile.name, email: profile.email, picture: profile.picture })
+                  })
+                  delivered = callback.ok
+                } catch {
+                  await new Promise(resolve => window.setTimeout(resolve, 500))
+                }
+              }
+              if (delivered) {
+                window.close()
+              } else {
+                setApiError('Đã đăng nhập Google nhưng không kết nối được Desktop Connector. Hãy mở lại ứng dụng desktop và thử đăng nhập lại.')
               }
             }
-            if (delivered) window.close()
+          } catch (error) {
+            setApiError(error instanceof Error ? error.message : 'Không thể đăng nhập.')
           }
         }
       })
@@ -185,10 +217,14 @@ function App() {
     if (!user) return
     let cancelled = false
     const loadDevices = async () => {
-      const response = await fetch(`${API_URL}/api/devices/me/${encodeURIComponent(user.subject)}`)
-      if (!response.ok) return
-      const result = await response.json()
-      if (!cancelled) setMyDevices(result)
+      try {
+        const response = await fetch(`${API_URL}/api/devices/me/${encodeURIComponent(user.subject)}`)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const result = await response.json()
+        if (!cancelled) setMyDevices(result)
+      } catch {
+        if (!cancelled) setApiError('Không thể tải thiết bị. Hãy kiểm tra kết nối máy chủ và Desktop Connector.')
+      }
     }
     void loadDevices()
     const timer = window.setInterval(loadDevices, 5000)
@@ -199,10 +235,14 @@ function App() {
     if (!user) { setMyRooms([]); return }
     let cancelled = false
     const loadRooms = async () => {
-      const response = await fetch(`${API_URL}/api/rooms/me/${encodeURIComponent(user.subject)}`)
-      if (!response.ok) return
-      const rooms = await response.json()
-      if (!cancelled) setMyRooms(rooms)
+      try {
+        const response = await fetch(`${API_URL}/api/rooms/me/${encodeURIComponent(user.subject)}`)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const rooms = await response.json()
+        if (!cancelled) setMyRooms(rooms)
+      } catch {
+        if (!cancelled) setApiError('Không thể tải danh sách phòng. Vui lòng thử tải lại trang.')
+      }
     }
     void loadRooms()
     const timer = window.setInterval(loadRooms, 5000)
@@ -215,17 +255,34 @@ function App() {
       <h1>Điều khiển Mumu từ xa</h1>
       <p className="subtitle">Quản lý PC/emulator của bạn và chia sẻ room với bạn bè.</p>
       <div className="google-login" ref={googleButton}></div>
+      {apiError && <p className="api-error" role="alert">{apiError}</p>}
       {user && <div className="profile-row"><span><b>{user.name}</b><small>{user.email}</small></span><button className="logout-button" onClick={logoutGoogle}><LogOut/> Đăng xuất</button></div>}
       {user && <div className="mobile-tabs"><button className={activeView === 'devices' ? 'active' : ''} onClick={() => setActiveView('devices')}>Thiết bị của tôi</button><button className={activeView === 'play' ? 'active' : ''} onClick={() => setActiveView('play')}>Cùng chơi</button></div>}
       {user && activeView === 'devices' && <div className="my-device-panel"><h3>PC và MumuPlayer</h3>{myDevices.length === 0 ? <div className="empty-state">Chưa có emulator. Hãy đăng nhập Google trên Desktop Connector để tự đồng bộ.</div> : myDevices.map(device => <div className="device-card" key={`${device.pcName}-${device.deviceId}`}><div className="device-icon"><Gamepad2/></div><div><b>{device.deviceName}</b><small>{device.pcName}</small></div><span className="online-badge">Online</span></div>)}</div>}
       {user && activeView === 'play' && <div className="play-panel">
         <div className="create-room-row"><input value={roomName} onChange={e => setRoomName(e.target.value)} placeholder="Tên phòng"/><button className="primary" onClick={createRoom}>Tạo phòng</button></div>
-        <label className="join"><Link2/><input value={room} onChange={e => setRoom(e.target.value.toUpperCase())} placeholder="Mã phòng"/><button onClick={joinRoom}>Tham gia</button></label>
-        <div className="room-list"><h3>Danh sách phòng</h3>{myRooms.length === 0 ? <div className="empty-state">Chưa có phòng nào.</div> : myRooms.map(item => <div className="room-card" key={item.roomId}><div><b>{item.name}</b><small>Mã: {item.roomId}</small></div><button onClick={() => navigator.clipboard.writeText(item.roomId)}>Copy mã</button></div>)}</div>
-        <div className="device-list"><b>Chọn emulator để add vào phòng</b>{myDevices.length === 0 ? <p>Chưa có emulator.</p> : myDevices.map(device => <button className="device-card add-device" key={device.deviceId} onClick={async () => { if (!room) return; await fetch(`${API_URL}/api/rooms/${room}/devices`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ownerSubject:user.subject,deviceId:device.deviceId,deviceName:device.deviceName,pcName:device.pcName})})}}><div className="device-icon"><Gamepad2/></div><div><b>{device.deviceName}</b><small>{device.pcName} · {device.deviceId}</small></div><span>Thêm</span></button>)}</div>
+        <label className="join"><Link2/><input value={room} onChange={e => setRoom(e.target.value.toUpperCase())} placeholder="Mã phòng"/><button onClick={() => void joinRoom()}>Tham gia</button></label>
+        <div className="room-list"><h3>Danh sách phòng</h3>{myRooms.length === 0 ? <div className="empty-state">Chưa có phòng nào.</div> : myRooms.map(item => <div className="room-card" key={item.roomId}><div><b>{item.name}</b><small>Mã: {item.roomId}</small></div><div className="room-actions"><button onClick={() => void navigator.clipboard.writeText(item.roomId)}><Copy/> Copy mã</button><button onClick={() => void joinRoom(item.roomId)}>Vào phòng</button></div></div>)}</div>
+        <div className="device-list"><b>Chọn emulator để add vào phòng</b>{myDevices.length === 0 ? <p>Chưa có emulator.</p> : myDevices.map(device => <button className="device-card add-device" key={device.deviceId} onClick={async () => {
+          if (!room) { setApiError('Hãy tạo phòng hoặc chọn phòng trước.'); return }
+          setApiError('')
+          try {
+            const response = await fetch(`${API_URL}/api/rooms/${room}/devices`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ownerSubject: user.subject, deviceId: device.deviceId, deviceName: device.deviceName, pcName: device.pcName })
+            })
+            if (!response.ok) throw new Error(`Không thể thêm emulator (HTTP ${response.status})`)
+            const updatedRoom = await response.json()
+            setDevices(updatedRoom.devices ?? [])
+          } catch (error) {
+            setApiError(error instanceof Error ? error.message : 'Không thể thêm emulator vào phòng.')
+          }
+        }}><div className="device-icon"><Gamepad2/></div><div><b>{device.deviceName}</b><small>{device.pcName} · {device.deviceId}</small></div><span>Thêm</span></button>)}</div>
       </div>}
     </section> : <section className="dashboard">
       <header><div className="brand"><Gamepad2/><b>Remote Mumu</b></div><div className="status"><span className={connected ? 'online' : ''}/>{connected ? 'Đã kết nối' : 'Ngoại tuyến'}</div><button className="icon" onClick={logoutGoogle}><LogOut/></button></header>
+      {apiError && <p className="api-error" role="alert">{apiError}</p>}
       <div className="tabs">
         <button className={activeView === 'devices' ? 'active' : ''} onClick={() => setActiveView('devices')}>Thiết bị của tôi</button>
         <button className={activeView === 'play' ? 'active' : ''} onClick={() => setActiveView('play')}>Cùng chơi</button>

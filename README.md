@@ -56,7 +56,7 @@ Production requires persistent PostgreSQL and reverse proxy HTTPS; JSON state is
 2. GitHub → Repository → Settings → Pages → Source: **GitHub Actions**.
 3. GitHub → Settings → Secrets and variables → Actions → New repository secret:
    - Name: `VITE_API_URL`
-   - Value: URL Render backend, ví dụ `https://remote-mumu-api.onrender.com`.
+   - Value: URL Render backend, ví dụ `https://remote-mumu.onrender.com`. Có thể bỏ qua secret này để dùng URL mặc định.
 4. Push nhánh `main`; workflow sẽ build và deploy frontend.
 
 ### 2. Backend: Render Free

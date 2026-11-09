@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: remote-mumu-api
+    name: remote-mumu
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free

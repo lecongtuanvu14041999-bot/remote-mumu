@@ -1,0 +1,19 @@
+.api-error {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.room-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.room-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

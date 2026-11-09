@@ -26,6 +26,7 @@ sealed class ConnectorForm : Form
     private string? adbPath;
     private readonly string apiUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_API_URL")?.TrimEnd('/') ?? "https://remote-mumu.onrender.com";
     private readonly string webUrl = Environment.GetEnvironmentVariable("REMOTEMUMU_WEB_URL")?.TrimEnd('/') ?? "https://lecongtuanvu14041999-bot.github.io/remote-mumu";
+    private bool isScanning;
 
     public ConnectorForm()
     {
@@ -54,55 +55,128 @@ sealed class ConnectorForm : Form
     private string StartCallbackListener()
     {
         const string url = "http://127.0.0.1:43189/connector/";
-        listener.Prefixes.Add(url);
-        listener.Start();
-        _ = ListenAsync();
-        return url;
+        try
+        {
+            listener.Prefixes.Add(url);
+            listener.Start();
+            _ = ListenAsync();
+            return url;
+        }
+        catch (HttpListenerException ex)
+        {
+            status.Text = $"Không mở được cổng đăng nhập: {ex.Message}";
+            return "";
+        }
     }
 
     private async Task ListenAsync()
     {
         while (listener.IsListening)
         {
-            var context = await listener.GetContextAsync();
-            context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
-            context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
-            context.Response.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS");
-            context.Response.ContentType = "text/plain";
-            if (context.Request.HttpMethod == "OPTIONS")
+            HttpListenerContext context;
+            try
             {
-                context.Response.StatusCode = 204;
-                context.Response.Close();
-                continue;
+                context = await listener.GetContextAsync();
             }
-            if (context.Request.HttpMethod == "POST")
+            catch (HttpListenerException) when (!listener.IsListening)
             {
-                using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
-                var profile = JsonSerializer.Deserialize<GoogleProfile>(await reader.ReadToEndAsync(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                if (profile != null)
+                return;
+            }
+
+            try
+            {
+                var origin = context.Request.Headers["Origin"];
+                var allowedOrigins = new[]
                 {
-                    googleSubject = profile.Subject;
-                    googleName = profile.Name;
-                    SaveProfile(profile);
-                    BeginInvoke(async () =>
+                    new Uri(webUrl).GetLeftPart(UriPartial.Authority),
+                    "http://localhost:5173",
+                    "http://127.0.0.1:5173"
+                };
+                if (!string.IsNullOrEmpty(origin) && !allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode = 403;
+                }
+                else
+                {
+                    if (origin != null)
                     {
-                        googleButton.Text = $"Google: {googleName}";
-                        googleButton.Enabled = false;
-                        logoutButton.Enabled = true;
-                        scanButton.Enabled = true;
-                        status.Text = $"Đã kết nối Google: {profile.Email} - đang quét...";
-                        await ScanAndSyncAsync();
-                    });
+                        context.Response.Headers["Access-Control-Allow-Origin"] = origin;
+                        context.Response.Headers["Vary"] = "Origin";
+                    }
+                    context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+                    context.Response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+                    if (context.Request.Headers["Access-Control-Request-Private-Network"] == "true")
+                        context.Response.Headers["Access-Control-Allow-Private-Network"] = "true";
+                    context.Response.ContentType = "text/plain";
+
+                    if (context.Request.HttpMethod == "OPTIONS")
+                    {
+                        context.Response.StatusCode = 204;
+                    }
+                    else if (context.Request.HttpMethod == "POST")
+                    {
+                        using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
+                        var profile = JsonSerializer.Deserialize<GoogleProfile>(await reader.ReadToEndAsync(),
+                            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                        if (profile == null || string.IsNullOrWhiteSpace(profile.Subject) || string.IsNullOrWhiteSpace(profile.Name))
+                        {
+                            context.Response.StatusCode = 400;
+                        }
+                        else
+                        {
+                            googleSubject = profile.Subject;
+                            googleName = profile.Name;
+                            SaveProfile(profile);
+                            BeginInvoke(async () =>
+                            {
+                                googleButton.Text = $"Google: {googleName}";
+                                googleButton.Enabled = false;
+                                logoutButton.Enabled = true;
+                                scanButton.Enabled = true;
+                                status.Text = $"Đã kết nối Google: {profile.Email} - đang quét...";
+                                await ScanAndSyncAsync();
+                            });
+                            var bytes = Encoding.UTF8.GetBytes("OK");
+                            context.Response.ContentLength64 = bytes.Length;
+                            await context.Response.OutputStream.WriteAsync(bytes);
+                        }
+                    }
+                    else
+                    {
+                        context.Response.StatusCode = 405;
+                    }
                 }
             }
-            var bytes = Encoding.UTF8.GetBytes("OK");
-            context.Response.ContentLength64 = bytes.Length;
-            context.Response.OutputStream.Write(bytes);
-            context.Response.Close();
+            catch (Exception ex)
+            {
+                if (IsHandleCreated)
+                    BeginInvoke(() => status.Text = $"Lỗi đăng nhập: {ex.Message}");
+                context.Response.StatusCode = 500;
+            }
+            finally
+            {
+                context.Response.Close();
+            }
         }
     }
 
-    private void OpenLogin() => Process.Start(new ProcessStartInfo($"{webUrl}/?connector={Uri.EscapeDataString(callbackUrl)}") { UseShellExecute = true });
+    private void OpenLogin()
+    {
+        if (!listener.IsListening)
+        {
+            status.Text = "Không thể mở đăng nhập. Hãy đóng các bản Remote Mumu Connector đang chạy rồi mở lại.";
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo($"{webUrl}/?connector={Uri.EscapeDataString(callbackUrl)}") { UseShellExecute = true });
+            status.Text = "Đã mở trình duyệt. Hoàn tất đăng nhập Google để kết nối PC.";
+        }
+        catch (Exception ex)
+        {
+            status.Text = $"Không mở được trình duyệt: {ex.Message}";
+        }
+    }
 
     private void Logout()
     {
@@ -159,34 +233,45 @@ sealed class ConnectorForm : Form
 
     private async Task ScanAndSyncAsync()
     {
-        if (googleSubject == null) return;
+        if (googleSubject == null || isScanning) return;
+        isScanning = true;
         devicesList.Items.Clear();
-        if (adbPath == null) { status.Text = "Không tìm thấy ADB MuMuPlayer"; return; }
+        try
+        {
+            if (adbPath == null) { status.Text = "Không tìm thấy ADB MuMuPlayer"; return; }
 
-        RunAdb("connect 127.0.0.1:7555");
-        for (var index = 0; index < 16; index++)
-        {
-            var port = 16384 + index * 32;
-            RunAdb($"connect 127.0.0.1:{port}");
+            RunAdb("connect 127.0.0.1:7555");
+            for (var index = 0; index < 16; index++)
+            {
+                var port = 16384 + index * 32;
+                RunAdb($"connect 127.0.0.1:{port}");
+            }
+            var output = RunAdb("devices");
+            var ids = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Skip(1)
+                .Select(x => x.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                .Where(parts => parts.Length >= 2 && parts[1].Equals("device", StringComparison.OrdinalIgnoreCase))
+                .Select(parts => parts[0])
+                .Where(x => x.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase)
+                    || x.StartsWith("localhost:", StringComparison.OrdinalIgnoreCase)
+                    || x.StartsWith("emulator-", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var id in ids)
+            {
+                devicesList.Items.Add(new ListViewItem([id, "Online"]));
+            }
+            await SyncDevicesAsync(ids);
+            status.Text = ids.Count == 0 ? "Không tìm thấy emulator đang chạy" : $"Đã đồng bộ {ids.Count} emulator";
         }
-        var output = RunAdb("devices");
-        var ids = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Skip(1)
-            .Select(x => x.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .Where(parts => parts.Length >= 2 && parts[1].Equals("device", StringComparison.OrdinalIgnoreCase))
-            .Select(parts => parts[0])
-            .Where(x => x.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase)
-                || x.StartsWith("localhost:", StringComparison.OrdinalIgnoreCase)
-                || x.StartsWith("emulator-", StringComparison.OrdinalIgnoreCase))
-            .Select(x => x!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        foreach (var id in ids)
+        catch (Exception ex)
         {
-            devicesList.Items.Add(new ListViewItem([id!, "Online"]));
+            status.Text = $"Lỗi quét MuMuPlayer: {ex.Message}";
         }
-        await SyncDevicesAsync(ids);
-        status.Text = ids.Count == 0 ? "Không tìm thấy emulator đang chạy" : $"Đã đồng bộ {ids.Count} emulator";
+        finally
+        {
+            isScanning = false;
+        }
     }
 
     private async Task SyncDevicesAsync(List<string> deviceIds)
@@ -303,6 +388,8 @@ sealed class ConnectorForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         SaveSettings();
+        scanTimer.Stop();
+        listener.Close();
         base.OnFormClosing(e);
     }
 
